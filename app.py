@@ -30,7 +30,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR = Path(__file__).parent
 
 # --------------------------------------------------------------------------
 # Data loading (cached so the app doesn't re-read CSVs on every interaction)
