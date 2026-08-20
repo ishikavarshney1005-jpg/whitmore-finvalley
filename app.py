@@ -145,16 +145,8 @@ if global_filter:
 
 # Live Parameterized Recomputations
 st.sidebar.markdown("### Scenario Overrides")
-assumed_sofr = st.sidebar.slider("ASSUMED_SOFR (%)", min_value=0.0, max_value=10.0, value=4.30, step=0.1) / 100
-eur_usd_proxy = st.sidebar.slider("EUR/USD Proxy", min_value=0.80, max_value=1.50, value=1.0655, step=0.01)
-
-if not loan_book.empty and "CCY" in loan_book.columns and "Outstanding_Native" in loan_book.columns:
-    is_eur = loan_book["CCY"] == "EUR"
-    if is_eur.any():
-        loan_book.loc[is_eur, "FX_Rate_to_USD"] = eur_usd_proxy
-        loan_book.loc[is_eur, "Outstanding_USD"] = loan_book.loc[is_eur, "Outstanding_Native"] * eur_usd_proxy
-        if "Commitment_Native" in loan_book.columns:
-            loan_book.loc[is_eur, "Commitment_USD"] = loan_book.loc[is_eur, "Commitment_Native"] * eur_usd_proxy
+assumed_sofr = st.sidebar.number_input("ASSUMED_SOFR (%)", value=4.30, step=0.1) / 100
+eur_usd_proxy = st.sidebar.number_input("EUR/USD Proxy", value=1.0655, step=0.01)
 
 # Export Assumptions Memo
 if not assumptions.empty:
@@ -285,70 +277,23 @@ for tab_name, tab_obj in zip(ordered_tabs, tab_objects):
                     filt['Live_Q4_Interest'] = filt.apply(live_q4_income, axis=1)
                     st.markdown(f"**Live Recomputed Total Q4 Interest (using {assumed_sofr*100:.2f}% SOFR): ${filt['Live_Q4_Interest'].sum():,.0f}**")
 
-                st.data_editor(
-                    filt, 
-                    width='stretch', 
-                    hide_index=True,
-                    column_config={
-                        "Outstanding_USD": st.column_config.NumberColumn(
-                            "Outstanding",
-                            format="$ %d"
-                        ),
-                        "Live_Q4_Interest": st.column_config.NumberColumn(
-                            "Live Q4 Int.",
-                            format="$ %d"
-                        ),
-                        "Coupon_Spread_bps": st.column_config.NumberColumn(
-                            "Spread (bps)",
-                            format="%d bps"
-                        ),
-                        "Servicer_Fee_bps": st.column_config.NumberColumn(
-                            "Servicer Fee",
-                            format="%d bps"
-                        )
-                    }
-                )
+                st.dataframe(filt, width='stretch', hide_index=True)
 
         elif tab_name == "Financing & Hedges":
             st.subheader("🔵 Fund financing & Hedge effectiveness")
-            st.data_editor(hedge_summary, width='stretch', hide_index=True)
+            st.dataframe(hedge_summary, width='stretch', hide_index=True)
 
         elif tab_name == "Options":
             st.subheader("🔵 Options — recognized P&L components")
-            st.data_editor(options_summary, width='stretch', hide_index=True)
+            st.dataframe(options_summary, width='stretch', hide_index=True)
 
         elif tab_name == "Concentration":
             st.subheader("🔵 Single-name concentration vs. Covenant Limit")
-            st.data_editor(
-                concentration_name, 
-                width='stretch', 
-                hide_index=True,
-                column_config={
-                    "Exposure_USD": st.column_config.NumberColumn(
-                        "Exposure (USD)",
-                        format="$ %d",
-                    ),
-                    "Limit_USD": st.column_config.NumberColumn(
-                        "Covenant Limit",
-                        format="$ %d",
-                    ),
-                    "Pct_of_NAV": st.column_config.ProgressColumn(
-                        "% of NAV",
-                        help="Visual indicator of concentration vs 12.5% limit",
-                        format="%.4f",
-                        min_value=0,
-                        max_value=0.25
-                    ),
-                    "Breach": st.column_config.CheckboxColumn(
-                        "Breach?",
-                        help="Check if exposure exceeds limit"
-                    )
-                }
-            )
+            st.dataframe(concentration_name, width='stretch', hide_index=True)
 
         elif tab_name == "Leased Assets":
             st.subheader("🔵 Full leased-assets registry")
-            st.data_editor(lease_full, width='stretch', hide_index=True)
+            st.dataframe(lease_full, width='stretch', hide_index=True)
 
         elif tab_name == "Cash vs. Recognized":
             st.subheader("🟢 Cash ledger vs 🟠 Accrual Gap")
@@ -358,21 +303,7 @@ for tab_name, tab_obj in zip(ordered_tabs, tab_objects):
                     & (cash_ledger["Value_Date"].dt.date >= start_d)
                     & (cash_ledger["Value_Date"].dt.date <= end_d)
                 ]
-                st.data_editor(
-                    cash_filt, 
-                    width='stretch', 
-                    hide_index=True,
-                    column_config={
-                        "Amount_USD": st.column_config.NumberColumn(
-                            "Amount (USD)",
-                            format="$ %d"
-                        ),
-                        "Value_Date": st.column_config.DateColumn(
-                            "Value Date",
-                            format="YYYY-MM-DD"
-                        )
-                    }
-                )
+                st.dataframe(cash_filt, width='stretch', hide_index=True)
             
             st.markdown("---")
             st.subheader("🟠 Recognition-timing gap, Q4 2025")
@@ -383,4 +314,4 @@ for tab_name, tab_obj in zip(ordered_tabs, tab_objects):
 
         elif tab_name == "Assumptions Log":
             st.subheader("🟠 Assumptions Log (Part A audit trail)")
-            st.data_editor(assumptions, width='stretch', hide_index=True)
+            st.dataframe(assumptions, width='stretch', hide_index=True)
