@@ -1,3 +1,4 @@
+print("SERVER IS ALIVE - STARTING IMPORTS")
 import json
 from pathlib import Path
 
