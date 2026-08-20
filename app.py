@@ -1,4 +1,3 @@
-print("SERVER IS ALIVE - STARTING IMPORTS")
 import json
 from pathlib import Path
 
@@ -30,7 +29,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-DATA_DIR = Path(__file__).parent
+DATA_DIR = Path(__file__).parent / "data"
 
 # --------------------------------------------------------------------------
 # Data loading (cached so the app doesn't re-read CSVs on every interaction)
@@ -119,6 +118,18 @@ st.sidebar.title("Controls & Filters")
 # Multi-period selector
 period = st.sidebar.selectbox("Period", ["2025Q4", "2026Q1 (Projected)"])
 
+# NOTE: the underlying dataset only contains actuals for 2025Q4 — there is no
+# real 2026Q1 source data. Rather than silently ignore the toggle, we apply a
+# clearly-labeled illustrative growth assumption to dollar figures so the
+# control is honest about what it's doing instead of doing nothing.
+PERIOD_GROWTH_ASSUMPTION = 0.03  # +3% QoQ, illustrative only — not sourced data
+period_factor = 1.0 if period == "2025Q4" else (1 + PERIOD_GROWTH_ASSUMPTION)
+if period != "2025Q4":
+    st.sidebar.caption(
+        f"⚠️ No 2026Q1 source data exists. Dollar figures below are scaled "
+        f"by an illustrative +{PERIOD_GROWTH_ASSUMPTION*100:.0f}% QoQ assumption, not sourced facts."
+    )
+
 # Role / Audience View Toggle
 role = st.sidebar.selectbox("Role View", [
     "Default",
@@ -146,8 +157,35 @@ if global_filter:
 
 # Live Parameterized Recomputations
 st.sidebar.markdown("### Scenario Overrides")
-assumed_sofr = st.sidebar.number_input("ASSUMED_SOFR (%)", value=4.30, step=0.1) / 100
-eur_usd_proxy = st.sidebar.number_input("EUR/USD Proxy", value=1.0655, step=0.01)
+assumed_sofr = st.sidebar.slider("ASSUMED_SOFR (%)", min_value=0.0, max_value=10.0, value=4.30, step=0.1) / 100
+eur_usd_proxy = st.sidebar.slider("EUR/USD Proxy", min_value=0.80, max_value=1.50, value=1.0655, step=0.01)
+
+if not loan_book.empty and "CCY" in loan_book.columns and "Outstanding_Native" in loan_book.columns:
+    is_eur = loan_book["CCY"] == "EUR"
+    if is_eur.any():
+        loan_book.loc[is_eur, "FX_Rate_to_USD"] = eur_usd_proxy
+        loan_book.loc[is_eur, "Outstanding_USD"] = loan_book.loc[is_eur, "Outstanding_Native"] * eur_usd_proxy
+        if "Commitment_Native" in loan_book.columns:
+            loan_book.loc[is_eur, "Commitment_USD"] = loan_book.loc[is_eur, "Commitment_Native"] * eur_usd_proxy
+
+# Live headline recompute driven by the sliders above, so the top-level KPI
+# cards actually move when you touch Scenario Overrides (previously the
+# sliders only affected one buried column in the Loan Book tab).
+def _live_q4_income(row):
+    if pd.isna(row.get("Coupon_Type")):
+        return 0.0
+    if row["Coupon_Type"] == "Fixed":
+        rate = row.get("Fixed_Rate_Pct", 0) / 100
+    else:
+        rate = assumed_sofr + row.get("Coupon_Spread_bps", 0) / 10000
+    return row.get("Outstanding_USD", 0) * rate / 4
+
+if not loan_book.empty and "Coupon_Type" in loan_book.columns:
+    live_total_outstanding = loan_book["Outstanding_USD"].sum()
+    live_q4_interest_total = loan_book.apply(_live_q4_income, axis=1).sum()
+    live_ann_yield = (live_q4_interest_total * 4 / live_total_outstanding) if live_total_outstanding else 0.0
+else:
+    live_total_outstanding, live_q4_interest_total, live_ann_yield = 0.0, 0.0, 0.0
 
 # Export Assumptions Memo
 if not assumptions.empty:
@@ -187,16 +225,26 @@ st.caption(f"LAIM performance dashboard · {period} · Whitmore Structured Credi
 kpi_dict = dict(zip(kpi_summary.get("KPI", []), kpi_summary.get("Value", [])))
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("🔵 Net yield, before leverage (ann.)", kpi_dict.get("Net yield before leverage (annualized)", "—"))
+c1.metric(
+    "🔵 Net yield, before leverage (live, ann.)",
+    f"{live_ann_yield*100:.2f}%",
+    f"vs {kpi_dict.get('Net yield before leverage (annualized)', '—')} base case",
+)
 c2.metric("🔵 Net yield, after leverage (ann.)", kpi_dict.get("Net yield after leverage (annualized)", "—"))
 c3.metric("🔵 Cost-to-income ratio", kpi_dict.get("Cost-to-income ratio", "—"))
-c4.metric("🔵 Debt-service coverage", kpi_dict.get("Debt-service coverage ratio", "—"))
+c4.metric("🔵 Live outstanding (USD, FX-adj.)", f"${live_total_outstanding:,.0f}")
 
 c5, c6, c7, c8 = st.columns(4)
-c5.metric("🟠 Net accrual gap (Q4)", "-$4.38M", "-1.14% of NAV", delta_color="inverse")
+c5.metric("🟠 Net accrual gap (Q4)", f"-${4.38*period_factor:.2f}M", "-1.14% of NAV", delta_color="inverse")
 c6.metric("🔵 Largest single-name breach", "Lumivue", "20.8% of NAV vs 12.5% limit", delta_color="inverse")
-c7.metric("🔵 Largest counterparty exposure", "Greystone Fin. Grp", "$3.84M net")
+c7.metric("🔵 Largest counterparty exposure", "Greystone Fin. Grp", f"${3.84*period_factor:.2f}M net")
 c8.metric("🟢 Hedges working as designed", "1 of 3", "IRS oversized, GBP backwards, JPY undersized", delta_color="off")
+
+st.caption(
+    "Note: the four cards above (accrual gap, largest breach/exposure, hedge count) are "
+    "currently hardcoded placeholders, not computed from the source data — see the memo "
+    "note on wiring these to `core_pnl_components` / `concentration.csv` directly."
+)
 
 with st.expander("Drill-through: KPIs & Source Trace"):
     st.markdown("**Net yield**: Source: `core_pnl_components`. Notebook Step: 9")
@@ -232,7 +280,8 @@ for tab_name, tab_obj in zip(ordered_tabs, tab_objects):
     with tab_obj:
         if tab_name == "Overview":
             st.subheader("🔵 Q4 Recognized P&L by component")
-            filtered_core = core_pnl[core_pnl["Asset_Class"].isin(selected_classes)]
+            filtered_core = core_pnl[core_pnl["Asset_Class"].isin(selected_classes)].copy()
+            filtered_core["Amount_USD"] = filtered_core["Amount_USD"] * period_factor
             if not filtered_core.empty:
                 fig = go.Figure()
                 colors = ["#146c2e" if v >= 0 else "#b3261e" for v in filtered_core["Amount_USD"]]
@@ -278,23 +327,82 @@ for tab_name, tab_obj in zip(ordered_tabs, tab_objects):
                     filt['Live_Q4_Interest'] = filt.apply(live_q4_income, axis=1)
                     st.markdown(f"**Live Recomputed Total Q4 Interest (using {assumed_sofr*100:.2f}% SOFR): ${filt['Live_Q4_Interest'].sum():,.0f}**")
 
-                st.dataframe(filt, width='stretch', hide_index=True)
+                st.data_editor(
+                    filt, 
+                    width='stretch', 
+                    hide_index=True,
+                    key="loan_book_editor",
+                    column_config={
+                        "Outstanding_USD": st.column_config.NumberColumn(
+                            "Outstanding",
+                            format="$ %d"
+                        ),
+                        "Live_Q4_Interest": st.column_config.NumberColumn(
+                            "Live Q4 Int.",
+                            format="$ %d"
+                        ),
+                        "Coupon_Spread_bps": st.column_config.NumberColumn(
+                            "Spread (bps)",
+                            format="%d bps"
+                        ),
+                        "Servicer_Fee_bps": st.column_config.NumberColumn(
+                            "Servicer Fee",
+                            format="%d bps"
+                        )
+                    }
+                )
 
         elif tab_name == "Financing & Hedges":
             st.subheader("🔵 Fund financing & Hedge effectiveness")
-            st.dataframe(hedge_summary, width='stretch', hide_index=True)
+            st.data_editor(hedge_summary, width='stretch', hide_index=True, key="hedge_editor")
 
         elif tab_name == "Options":
             st.subheader("🔵 Options — recognized P&L components")
-            st.dataframe(options_summary, width='stretch', hide_index=True)
+            st.caption("Tick/untick 'Recognized' to see the recomputed total below update live.")
+            edited_options = st.data_editor(
+                options_summary, width='stretch', hide_index=True, key="options_editor"
+            )
+            if not edited_options.empty and "Recognized" in edited_options.columns:
+                live_recognized_total = edited_options.loc[edited_options["Recognized"], "Amount_USD"].sum()
+                st.metric("Recognized P&L (per current ticks)", f"${live_recognized_total:,.0f}")
 
         elif tab_name == "Concentration":
             st.subheader("🔵 Single-name concentration vs. Covenant Limit")
-            st.dataframe(concentration_name, width='stretch', hide_index=True)
+            st.caption("Tick/untick 'Breach?' to override the auto-flag; the count below updates live.")
+            edited_concentration = st.data_editor(
+                concentration_name, 
+                width='stretch', 
+                hide_index=True,
+                key="concentration_editor",
+                column_config={
+                    "Exposure_USD": st.column_config.NumberColumn(
+                        "Exposure (USD)",
+                        format="$ %d",
+                    ),
+                    "Limit_USD": st.column_config.NumberColumn(
+                        "Covenant Limit",
+                        format="$ %d",
+                    ),
+                    "Pct_of_NAV": st.column_config.ProgressColumn(
+                        "% of NAV",
+                        help="Visual indicator of concentration vs 12.5% limit",
+                        format="%.4f",
+                        min_value=0,
+                        max_value=0.25
+                    ),
+                    "Breach": st.column_config.CheckboxColumn(
+                        "Breach?",
+                        help="Check if exposure exceeds limit"
+                    )
+                }
+            )
+            if not edited_concentration.empty and "Breach" in edited_concentration.columns:
+                n_breach = int(edited_concentration["Breach"].sum())
+                st.metric("Confirmed breaches (per current ticks)", f"{n_breach} of {len(edited_concentration)}")
 
         elif tab_name == "Leased Assets":
             st.subheader("🔵 Full leased-assets registry")
-            st.dataframe(lease_full, width='stretch', hide_index=True)
+            st.data_editor(lease_full, width='stretch', hide_index=True, key="lease_editor")
 
         elif tab_name == "Cash vs. Recognized":
             st.subheader("🟢 Cash ledger vs 🟠 Accrual Gap")
@@ -303,16 +411,32 @@ for tab_name, tab_obj in zip(ordered_tabs, tab_objects):
                     cash_ledger.get("Asset_Class", pd.Series()).isin(selected_classes)
                     & (cash_ledger["Value_Date"].dt.date >= start_d)
                     & (cash_ledger["Value_Date"].dt.date <= end_d)
-                ]
-                st.dataframe(cash_filt, width='stretch', hide_index=True)
+                ].copy()
+                cash_filt["Amount_USD"] = cash_filt["Amount_USD"] * period_factor
+                st.data_editor(
+                    cash_filt, 
+                    width='stretch', 
+                    hide_index=True,
+                    key="cash_editor",
+                    column_config={
+                        "Amount_USD": st.column_config.NumberColumn(
+                            "Amount (USD)",
+                            format="$ %d"
+                        ),
+                        "Value_Date": st.column_config.DateColumn(
+                            "Value Date",
+                            format="YYYY-MM-DD"
+                        )
+                    }
+                )
             
             st.markdown("---")
             st.subheader("🟠 Recognition-timing gap, Q4 2025")
             gap1, gap2, gap3 = st.columns(3)
-            gap1.metric("Income recognized, cash not yet received", f"${scalars.get('total_income_no_cash', 0):,.0f}")
-            gap2.metric("Expense recognized, cash not yet paid", f"-${scalars.get('total_expense_no_cash', 0):,.0f}")
-            gap3.metric("Net accrual gap", f"${scalars.get('net_accrual_gap_q4', 0):,.0f}", "-1.14% of NAV", delta_color="inverse")
+            gap1.metric("Income recognized, cash not yet received", f"${scalars.get('total_income_no_cash', 0)*period_factor:,.0f}")
+            gap2.metric("Expense recognized, cash not yet paid", f"-${scalars.get('total_expense_no_cash', 0)*period_factor:,.0f}")
+            gap3.metric("Net accrual gap", f"${scalars.get('net_accrual_gap_q4', 0)*period_factor:,.0f}", "-1.14% of NAV", delta_color="inverse")
 
         elif tab_name == "Assumptions Log":
             st.subheader("🟠 Assumptions Log (Part A audit trail)")
-            st.dataframe(assumptions, width='stretch', hide_index=True)
+            st.data_editor(assumptions, width='stretch', hide_index=True, key="assumptions_editor")
